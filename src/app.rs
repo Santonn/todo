@@ -1,6 +1,7 @@
-
-use crate::storage::{append_one, load_all, rewrite_file};
+use crate::command::execute_command;
 use crate::todo::Todo;
+use crate::storage::load_all;
+
 use color_eyre::Result;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
@@ -43,87 +44,22 @@ impl App {
     }
 
     /// Refresh both `todos` and full `view`
+    #[allow(dead_code)]
     fn refresh_all(&mut self) {
         self.todos = load_all();
         self.view = (0..self.todos.len()).collect();
     }
 
     fn execute_command(&mut self) {
-        let cmd_owned = self.input.clone();
-        let cmd = cmd_owned.trim();
-        self.error = None;
+        let result = execute_command(
+            std::mem::take(&mut self.todos),
+            std::mem::take(&mut self.view),
+            &self.input,
+        );
 
-        match cmd.split_whitespace().next() {
-            Some("list") => {
-                self.refresh_all();
-            }
-            Some("add") => {
-                if let Some(rest) = cmd.strip_prefix("add ").map(str::trim) {
-                    match Todo::from_add(rest) {
-                        Ok(t) => {
-                            if append_one(&t).is_ok() {
-                                self.todos.push(t);
-                                // new item appears at end of full list
-                                self.view.push(self.todos.len() - 1);
-                            }
-                        }
-                        Err(e) => self.error = Some(e),
-                    }
-                } else {
-                    self.error = Some("Usage: add <todo>".into());
-                }
-            }
-            Some("done") => {
-                // operate on current view
-                if let Some(arg) = cmd.strip_prefix("done ").map(str::trim) {
-                    if let Ok(id) = arg.parse::<usize>() {
-                        if id >= 1 && id <= self.view.len() {
-                            let todo_idx = self.view[id - 1];
-                            self.todos[todo_idx].mark_done();
-                            let _ = rewrite_file(&self.todos);
-                            self.refresh_all();
-                        } else {
-                            self.error = Some("Invalid ID".into());
-                        }
-                    } else {
-                        self.error = Some("Usage: done <ID>".into());
-                    }
-                }
-            }
-            Some("remove") => {
-                if let Some(arg) = cmd.strip_prefix("remove ").map(str::trim) {
-                    if let Ok(id) = arg.parse::<usize>() {
-                        if id >= 1 && id <= self.view.len() {
-                            let todo_idx = self.view[id - 1];
-                            self.todos.remove(todo_idx);
-                            let _ = rewrite_file(&self.todos);
-                            self.refresh_all();
-                        } else {
-                            self.error = Some("Invalid ID".into());
-                        }
-                    } else {
-                        self.error = Some("Usage: remove <ID>".into());
-                    }
-                }
-            }
-            Some("closest") => {
-                // build a new view: only incomplete with due, sorted
-                let mut pairs: Vec<(usize, Todo)> = self
-                    .todos
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, t)| !t.completion && t.description.due.is_some())
-                    .map(|(i, t)| (i, t.clone()))
-                    .collect();
-                pairs.sort_by_key(|(_, t)| t.description.due.unwrap());
-                self.view = pairs.into_iter().map(|(i, _)| i).collect();
-            }
-            Some("") | None => { /* no-op */ }
-            Some(other) => {
-                self.error = Some(format!("Unknown command: {}", other));
-            }
-        }
-
+        self.todos = result.todos;
+        self.view = result.view;
+        self.error = result.error;
         self.input.clear();
         self.cursor = 0;
     }

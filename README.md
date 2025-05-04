@@ -6,6 +6,12 @@ todo を管理するための TUI アプリケーションです．Rust の学�
 - Windows11 Pro (24H2)
 - rustc 1.86.0
 
+# 使い方
+1. cargo でプロジェクトを作成
+2. src 直下と Cargo.toml をリポジトリのそれに変更
+3. プロジェクトのルートディレクトリ直下に "todo.txt" を作成する
+4. プロジェクトをビルド・実行する
+
 # できること
 |Command|Description|
 |:---:|:---|

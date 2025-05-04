@@ -1,7 +1,6 @@
 use crate::command::execute_command;
 use crate::todo::Todo;
 use crate::storage::load_all;
-
 use chrono::Local;
 use color_eyre::Result;
 use ratatui::{
@@ -14,10 +13,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-enum InputMode {
-    Normal,
-    Editing,
-}
+enum InputMode { Normal, Editing }
 
 pub struct App {
     todos: Vec<Todo>,
@@ -35,22 +31,16 @@ impl App {
         Self { todos, view, input: String::new(), cursor: 0, mode: InputMode::Normal, error: None }
     }
 
-    fn execute_command(&mut self) {
-        let result = execute_command(
-            std::mem::take(&mut self.todos),
-            std::mem::take(&mut self.view),
-            &self.input,
-        );
-        self.todos = result.todos;
-        self.view = result.view;
-        self.error = result.error;
+    fn apply_command(&mut self) {
+        let res = execute_command(&mut self.todos, &mut self.view, &self.input);
+        self.error = res.error;
         self.input.clear();
         self.cursor = 0;
     }
 
     fn cursor_x(&self) -> u16 {
-        let s: String = self.input.chars().take(self.cursor).collect();
-        UnicodeWidthStr::width(s.as_str()) as u16
+        let end = self.input.char_indices().nth(self.cursor).map(|(i, _)| i).unwrap_or(self.input.len());
+        UnicodeWidthStr::width(&self.input[..end]) as u16
     }
 
     pub fn run(mut self, mut term: DefaultTerminal) -> Result<()> {
@@ -60,11 +50,11 @@ impl App {
                 match self.mode {
                     InputMode::Normal => match key.code {
                         KeyCode::Char('e') => self.mode = InputMode::Editing,
-                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('q') => break,
                         _ => {}
                     },
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
-                        KeyCode::Enter => self.execute_command(),
+                        KeyCode::Enter => self.apply_command(),
                         KeyCode::Char(c) => {
                             let idx = self.input.char_indices().map(|(i, _)| i)
                                 .nth(self.cursor).unwrap_or(self.input.len());
@@ -88,6 +78,7 @@ impl App {
                 }
             }
         }
+        Ok(())
     }
 
     fn draw(&self, f: &mut Frame) {
@@ -98,6 +89,7 @@ impl App {
             Constraint::Min(1),
         ]).split(f.area());
 
+        // ヘッダー
         let header = if let Some(err) = &self.error {
             Paragraph::new(err.clone()).style(Style::default().fg(Color::Red))
         } else {
@@ -115,17 +107,16 @@ impl App {
         };
         f.render_widget(header, chunks[0]);
 
+        // 入力欄
         let input = Paragraph::new(self.input.as_str())
-            .style(match self.mode {
-                InputMode::Normal => Style::default(),
-                InputMode::Editing => Style::default().fg(Color::Yellow),
-            })
+            .style(if matches!(self.mode, InputMode::Editing) { Style::default().fg(Color::Yellow) } else { Style::default() })
             .block(Block::bordered().title("Input"));
         f.render_widget(input, chunks[1]);
-        if let InputMode::Editing = self.mode {
+        if matches!(self.mode, InputMode::Editing) {
             f.set_cursor_position((chunks[1].x + self.cursor_x() + 1, chunks[1].y + 1));
         }
 
+        // TODO リスト表示
         let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
         let sep = |w: u16| Line::from(vec![Span::raw(" "), Span::raw("-".repeat((w - 2) as usize))]);
 
@@ -134,25 +125,13 @@ impl App {
 
         for (idx, &i) in self.view.iter().enumerate() {
             let t = &self.todos[i];
-            // Determine marker color
-            let marker_color = if let Some(due) = t.description.due {
-                let days = (due - today).num_days();
-                if days <= 3 {
-                    Color::Red
-                } else if days <= 7 {
-                    Color::Yellow
-                } else {
-                    Color::Green
-                }
-            } else {
-                Color::Gray
-            };
+            // マーカー色
+            let marker_color = t.marker_color(today);
             let marker = Span::styled(" ", Style::default().bg(marker_color));
 
             let mut lines = Vec::new();
-
             lines.push(sep(cols[0].width));
-
+            // 見出し行
             let head = format!("{}: {}{}{}",
                 idx + 1,
                 if t.completion { "x " } else { "" },
@@ -160,23 +139,16 @@ impl App {
                 t.description.content
             );
             lines.push(Line::from(vec![marker.clone(), Span::raw(head)]));
-
+            // 日付行
             if t.completion_date.is_some() || t.creation_date.is_some() {
                 let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
                 let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
                 lines.push(Line::from(vec![marker.clone(), Span::raw(format!("     {} {}", cd, cr))]));
             }
-
-            if let Some(p) = &t.description.project {
-                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      +{}", p))]));
-            }
-            if let Some(c) = &t.description.context {
-                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      @{}", c))]));
-            }
-            if let Some(d) = t.description.due {
-                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      due:{}", d.format("%Y-%m-%d")))]));
-            }
-
+            // タグ行 & due
+            if let Some(p) = &t.description.project { lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      +{}", p))])); }
+            if let Some(c) = &t.description.context { lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      @{}", c))])); }
+            if let Some(d) = t.description.due { lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      due:{}", d.format("%Y-%m-%d"))) ])); }
             lines.push(sep(cols[0].width));
 
             let item = ListItem::new(Text::from(lines));

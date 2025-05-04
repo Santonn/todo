@@ -28,12 +28,12 @@ impl Command {
                                 .and_then(|s| s.parse().ok())
                                 .map(Command::Done)
                                 .unwrap_or(Command::Unknown(cmd.into())),
-            "remove"    => parts.next()
+            "rm"    => parts.next()
                                 .and_then(|s| s.parse().ok())
                                 .map(Command::Remove)
                                 .unwrap_or(Command::Unknown(cmd.into())),
-            "closest"   => Command::Closest,
-            "important" => Command::Important,
+            "sd"   => Command::Closest,
+            "sp" => Command::Important,
             other        => Command::Unknown(other.into()),
         }
     }

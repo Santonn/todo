@@ -2,6 +2,7 @@ use crate::command::execute_command;
 use crate::todo::Todo;
 use crate::storage::load_all;
 
+use chrono::Local;
 use color_eyre::Result;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
@@ -32,12 +33,6 @@ impl App {
         let todos = load_all();
         let view = (0..todos.len()).collect();
         Self { todos, view, input: String::new(), cursor: 0, mode: InputMode::Normal, error: None }
-    }
-
-    #[allow(dead_code)]
-    fn refresh_all(&mut self) {
-        self.todos = load_all();
-        self.view = (0..self.todos.len()).collect();
     }
 
     fn execute_command(&mut self) {
@@ -96,13 +91,13 @@ impl App {
     }
 
     fn draw(&self, f: &mut Frame) {
+        let today = Local::now().date_naive();
         let chunks = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(3),
             Constraint::Min(1),
         ]).split(f.area());
 
-        // Header/Error
         let header = if let Some(err) = &self.error {
             Paragraph::new(err.clone()).style(Style::default().fg(Color::Red))
         } else {
@@ -120,7 +115,6 @@ impl App {
         };
         f.render_widget(header, chunks[0]);
 
-        // Input
         let input = Paragraph::new(self.input.as_str())
             .style(match self.mode {
                 InputMode::Normal => Style::default(),
@@ -132,51 +126,68 @@ impl App {
             f.set_cursor_position((chunks[1].x + self.cursor_x() + 1, chunks[1].y + 1));
         }
 
-        // Split view
         let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
-        let sep = |w: u16| "-".repeat(w as usize);
-        let w1 = cols[0].width.saturating_sub(2);
-        let w2 = cols[1].width.saturating_sub(2);
+        let sep = |w: u16| Line::from(vec![Span::raw(" "), Span::raw("-".repeat((w - 2) as usize))]);
 
-        // Build lists with updated indices
-        let mut due = Vec::new();
-        let mut nodue = Vec::new();
+        let mut due_items = Vec::new();
+        let mut nodue_items = Vec::new();
+
         for (idx, &i) in self.view.iter().enumerate() {
             let t = &self.todos[i];
-            let w = if t.description.due.is_some() { w1 } else { w2 };
+            // Determine marker color
+            let marker_color = if let Some(due) = t.description.due {
+                let days = (due - today).num_days();
+                if days <= 3 {
+                    Color::Red
+                } else if days <= 7 {
+                    Color::Yellow
+                } else {
+                    Color::Green
+                }
+            } else {
+                Color::Gray
+            };
+            let marker = Span::styled(" ", Style::default().bg(marker_color));
+
             let mut lines = Vec::new();
-            lines.push(Line::from(Span::raw(sep(w))));
+
+            lines.push(sep(cols[0].width));
+
             let head = format!("{}: {}{}{}",
                 idx + 1,
                 if t.completion { "x " } else { "" },
                 t.priority.map(|p| format!("({}) ", p)).unwrap_or_default(),
                 t.description.content
             );
-            lines.push(Line::from(Span::raw(head)));
+            lines.push(Line::from(vec![marker.clone(), Span::raw(head)]));
+
             if t.completion_date.is_some() || t.creation_date.is_some() {
                 let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
                 let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
-                lines.push(Line::from(Span::raw(format!("  {} {}", cd, cr))));
+                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("     {} {}", cd, cr))]));
             }
+
             if let Some(p) = &t.description.project {
-                lines.push(Line::from(Span::raw(format!("  +{}", p))));
+                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      +{}", p))]));
             }
             if let Some(c) = &t.description.context {
-                lines.push(Line::from(Span::raw(format!("  @{}", c))));
+                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      @{}", c))]));
             }
             if let Some(d) = t.description.due {
-                lines.push(Line::from(Span::raw(format!("  due:{}", d.format("%Y-%m-%d")))));
+                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      due:{}", d.format("%Y-%m-%d")))]));
             }
-            lines.push(Line::from(Span::raw(sep(w))));
+
+            lines.push(sep(cols[0].width));
+
             let item = ListItem::new(Text::from(lines));
             if t.description.due.is_some() {
-                due.push(item);
+                due_items.push(item);
             } else {
-                nodue.push(item);
+                nodue_items.push(item);
             }
         }
 
-        f.render_widget(List::new(due).block(Block::bordered().title("Due Todos")), cols[0]);
-        f.render_widget(List::new(nodue).block(Block::bordered().title("No-Due Todos")), cols[1]);
+        f.render_widget(List::new(due_items).block(Block::bordered().title("Due Todos")), cols[0]);
+        f.render_widget(List::new(nodue_items).block(Block::bordered().title("No-Due Todos")), cols[1]);
     }
 }

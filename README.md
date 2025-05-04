@@ -12,9 +12,15 @@ todo を管理するための TUI アプリケーションです．Rust の学�
 |`list`|"todo.txt" に書かれた todo の一覧表示|
 |`add <todo.txtのフォーマット>`|新しい todo の追加．作成日は自動挿入|
 |`done <todo のインデックス>`|todo に完了マークと完了日を挿入|
-|`remove <todo のインデックス>`|todo を "tood.txt" から削除|
+|`rm <todo のインデックス>`|todo を "tood.txt" から削除|
 |`sd`|dueタグを含み，かつまだ完了していない todo を**期日が近い**順にソート|
 |`sp`|優先度を含み，かつまだ完了していない todo を**優先度が高い**順にソート|
+
+$\textreferencemark$ rm : remove
+
+$\textreferencemark$ sd : sort deadline
+
+$\textreferencemark$ sp : sort priority
 
 # todo.txt のフォーマット
 

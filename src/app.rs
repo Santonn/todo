@@ -5,7 +5,7 @@ use crate::storage::load_all;
 use color_eyre::Result;
 use ratatui::{
     crossterm::event::{self, Event, KeyCode, KeyEventKind},
-    layout::{Constraint, Layout, Position, Rect},
+    layout::{Constraint, Layout},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{Block, List, ListItem, Paragraph},
@@ -19,9 +19,7 @@ enum InputMode {
 }
 
 pub struct App {
-    /// All todos, in file order
     todos: Vec<Todo>,
-    /// Which indices of `todos` are currently shown, in what order
     view: Vec<usize>,
     input: String,
     cursor: usize,
@@ -33,17 +31,9 @@ impl App {
     pub fn new() -> Self {
         let todos = load_all();
         let view = (0..todos.len()).collect();
-        Self {
-            todos,
-            view,
-            input: String::new(),
-            cursor: 0,
-            mode: InputMode::Normal,
-            error: None,
-        }
+        Self { todos, view, input: String::new(), cursor: 0, mode: InputMode::Normal, error: None }
     }
 
-    /// Refresh both `todos` and full `view`
     #[allow(dead_code)]
     fn refresh_all(&mut self) {
         self.todos = load_all();
@@ -83,12 +73,8 @@ impl App {
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
                         KeyCode::Enter => self.execute_command(),
                         KeyCode::Char(c) => {
-                            let idx = self
-                                .input
-                                .char_indices()
-                                .map(|(i, _)| i)
-                                .nth(self.cursor)
-                                .unwrap_or(self.input.len());
+                            let idx = self.input.char_indices().map(|(i, _)| i)
+                                .nth(self.cursor).unwrap_or(self.input.len());
                             self.input.insert(idx, c);
                             self.cursor += 1;
                         }
@@ -101,9 +87,7 @@ impl App {
                             }
                         }
                         KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
-                        KeyCode::Right => {
-                            self.cursor = (self.cursor + 1).min(self.input.chars().count())
-                        }
+                        KeyCode::Right => self.cursor = (self.cursor + 1).min(self.input.chars().count()),
                         KeyCode::Esc => self.mode = InputMode::Normal,
                         _ => {}
                     },
@@ -114,36 +98,18 @@ impl App {
     }
 
     fn draw(&self, f: &mut Frame) {
-        let chunks: [Rect; 3] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Min(1),
-        ])
-        .areas(f.area());
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Length(3), Constraint::Min(1)]).split(f.area());
 
-        // top line: error or help
         let header = if let Some(err) = &self.error {
             Paragraph::new(err.clone()).style(Style::default().fg(Color::Red))
         } else {
             let (msg, style) = match self.mode {
                 InputMode::Normal => (
-                    vec![
-                        "Press ".into(),
-                        "q".bold(),
-                        " to quit, ".into(),
-                        "e".bold(),
-                        " to edit.".into(),
-                    ],
+                    vec!["Press ".into(), "q".bold(), " to quit, ".into(), "e".bold(), " to edit.".into()],
                     Style::default().add_modifier(Modifier::RAPID_BLINK),
                 ),
                 InputMode::Editing => (
-                    vec![
-                        "Press ".into(),
-                        "Esc".bold(),
-                        " to cancel, ".into(),
-                        "Enter".bold(),
-                        " to run.".into(),
-                    ],
+                    vec!["Press ".into(), "Esc".bold(), " to cancel, ".into(), "Enter".bold(), " to run.".into()],
                     Style::default(),
                 ),
             };
@@ -151,37 +117,72 @@ impl App {
         };
         f.render_widget(header, chunks[0]);
 
-        // input
         let input_w = Paragraph::new(self.input.as_str())
-            .style(match self.mode {
-                InputMode::Normal => Style::default(),
-                InputMode::Editing => Style::default().fg(Color::Yellow),
-            })
+            .style(match self.mode { InputMode::Normal => Style::default(), InputMode::Editing => Style::default().fg(Color::Yellow) })
             .block(Block::bordered().title("Input"));
         f.render_widget(input_w, chunks[1]);
         if let InputMode::Editing = self.mode {
-            f.set_cursor_position(Position::new(
-                chunks[1].x + self.cursor_x() + 1,
-                chunks[1].y + 1,
-            ));
+            f.set_cursor_position((chunks[1].x + self.cursor_x() + 1, chunks[1].y + 1));
         }
 
-        // todos list drawn from `view`
-        let items: Vec<ListItem> = self
-            .view
-            .iter()
-            .enumerate()
-            .map(|(display_idx, &todo_idx)| {
-                let t = &self.todos[todo_idx];
-                let mut line = format!("{}: {}", display_idx + 1, t.format());
-                if let Some(due) = &t.description.due {
-                    line.push_str(&format!(" [due {}]", due));
-                }
-                ListItem::new(Line::from(Span::raw(line)))
-            })
-            .collect();
+        let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
 
-        let list_w = List::new(items).block(Block::bordered().title("Todos"));
-        f.render_widget(list_w, chunks[2]);
+        let due_items: Vec<ListItem> = self.view.iter().filter_map(|&i| {
+            let t = &self.todos[i];
+            if t.description.due.is_some() {
+                let mut lines = Vec::new();
+                let first = format!("{}: {}{} {}", i+1,
+                    if t.completion { "x " } else { "" },
+                    t.priority.map(|p| format!("({}) ", p)).unwrap_or_default(),
+                    t.description.content);
+                lines.push(Line::from(Span::raw(first)));
+                if t.completion_date.is_some() || t.creation_date.is_some() {
+                    let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string());
+                    let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string());
+                    let dates = format!("          {} {}", cd.unwrap_or_default(), cr.unwrap_or_default());
+                    lines.push(Line::from(Span::raw(dates)));
+                }
+                if t.description.project.is_some() || t.description.context.is_some() {
+                    let proj = t.description.project.as_ref().map(|s| format!("+{}", s)).unwrap_or_default();
+                    let ctx = t.description.context.as_ref().map(|s| format!("@{}", s)).unwrap_or_default();
+                    let tags = format!("          {} {}", proj, ctx);
+                    lines.push(Line::from(Span::raw(tags)));
+                }
+                if let Some(d) = t.description.due {
+                    let due = format!("          due:{}", d.format("%Y-%m-%d"));
+                    lines.push(Line::from(Span::raw(due)));
+                }
+                Some(ListItem::new(Text::from(lines)))
+            } else { None }
+        }).collect();
+        let due_list = List::new(due_items).block(Block::bordered().title("Due Todos"));
+        f.render_widget(due_list, cols[0]);
+
+        let nodue_items: Vec<ListItem> = self.view.iter().filter_map(|&i| {
+            let t = &self.todos[i];
+            if t.description.due.is_none() {
+                let mut lines = Vec::new();
+                let first = format!("{}: {}{} {}", i+1,
+                    if t.completion { "x " } else { "" },
+                    t.priority.map(|p| format!("({}) ", p)).unwrap_or_default(),
+                    t.description.content);
+                lines.push(Line::from(Span::raw(first)));
+                if t.completion_date.is_some() || t.creation_date.is_some() {
+                    let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string());
+                    let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string());
+                    let dates = format!("            {} {}", cd.unwrap_or_default(), cr.unwrap_or_default());
+                    lines.push(Line::from(Span::raw(dates)));
+                }
+                if t.description.project.is_some() || t.description.context.is_some() {
+                    let proj = t.description.project.as_ref().map(|s| format!("+{}", s)).unwrap_or_default();
+                    let ctx = t.description.context.as_ref().map(|s| format!("@{}", s)).unwrap_or_default();
+                    let tags = format!("            {} {}", proj, ctx);
+                    lines.push(Line::from(Span::raw(tags)));
+                }
+                Some(ListItem::new(Text::from(lines)))
+            } else { None }
+        }).collect();
+        let nodue_list = List::new(nodue_items).block(Block::bordered().title("No-Due Todos"));
+        f.render_widget(nodue_list, cols[1]);
     }
 }

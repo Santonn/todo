@@ -46,7 +46,6 @@ impl App {
             std::mem::take(&mut self.view),
             &self.input,
         );
-
         self.todos = result.todos;
         self.view = result.view;
         self.error = result.error;
@@ -62,7 +61,6 @@ impl App {
     pub fn run(mut self, mut term: DefaultTerminal) -> Result<()> {
         loop {
             term.draw(|f| self.draw(f))?;
-
             if let Event::Key(key) = event::read()? {
                 match self.mode {
                     InputMode::Normal => match key.code {
@@ -98,8 +96,13 @@ impl App {
     }
 
     fn draw(&self, f: &mut Frame) {
-        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Length(3), Constraint::Min(1)]).split(f.area());
+        let chunks = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(1),
+        ]).split(f.area());
 
+        // Header/Error
         let header = if let Some(err) = &self.error {
             Paragraph::new(err.clone()).style(Style::default().fg(Color::Red))
         } else {
@@ -117,72 +120,63 @@ impl App {
         };
         f.render_widget(header, chunks[0]);
 
-        let input_w = Paragraph::new(self.input.as_str())
-            .style(match self.mode { InputMode::Normal => Style::default(), InputMode::Editing => Style::default().fg(Color::Yellow) })
+        // Input
+        let input = Paragraph::new(self.input.as_str())
+            .style(match self.mode {
+                InputMode::Normal => Style::default(),
+                InputMode::Editing => Style::default().fg(Color::Yellow),
+            })
             .block(Block::bordered().title("Input"));
-        f.render_widget(input_w, chunks[1]);
+        f.render_widget(input, chunks[1]);
         if let InputMode::Editing = self.mode {
             f.set_cursor_position((chunks[1].x + self.cursor_x() + 1, chunks[1].y + 1));
         }
 
+        // Split view
         let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
+        let sep = |w: u16| "-".repeat(w as usize);
+        let w1 = cols[0].width.saturating_sub(2);
+        let w2 = cols[1].width.saturating_sub(2);
 
-        let due_items: Vec<ListItem> = self.view.iter().filter_map(|&i| {
+        // Build lists with updated indices
+        let mut due = Vec::new();
+        let mut nodue = Vec::new();
+        for (idx, &i) in self.view.iter().enumerate() {
             let t = &self.todos[i];
+            let w = if t.description.due.is_some() { w1 } else { w2 };
+            let mut lines = Vec::new();
+            lines.push(Line::from(Span::raw(sep(w))));
+            let head = format!("{}: {}{}{}",
+                idx + 1,
+                if t.completion { "x " } else { "" },
+                t.priority.map(|p| format!("({}) ", p)).unwrap_or_default(),
+                t.description.content
+            );
+            lines.push(Line::from(Span::raw(head)));
+            if t.completion_date.is_some() || t.creation_date.is_some() {
+                let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+                let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
+                lines.push(Line::from(Span::raw(format!("  {} {}", cd, cr))));
+            }
+            if let Some(p) = &t.description.project {
+                lines.push(Line::from(Span::raw(format!("  +{}", p))));
+            }
+            if let Some(c) = &t.description.context {
+                lines.push(Line::from(Span::raw(format!("  @{}", c))));
+            }
+            if let Some(d) = t.description.due {
+                lines.push(Line::from(Span::raw(format!("  due:{}", d.format("%Y-%m-%d")))));
+            }
+            lines.push(Line::from(Span::raw(sep(w))));
+            let item = ListItem::new(Text::from(lines));
             if t.description.due.is_some() {
-                let mut lines = Vec::new();
-                let first = format!("{}: {}{} {}", i+1,
-                    if t.completion { "x " } else { "" },
-                    t.priority.map(|p| format!("({}) ", p)).unwrap_or_default(),
-                    t.description.content);
-                lines.push(Line::from(Span::raw(first)));
-                if t.completion_date.is_some() || t.creation_date.is_some() {
-                    let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string());
-                    let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string());
-                    let dates = format!("          {} {}", cd.unwrap_or_default(), cr.unwrap_or_default());
-                    lines.push(Line::from(Span::raw(dates)));
-                }
-                if t.description.project.is_some() || t.description.context.is_some() {
-                    let proj = t.description.project.as_ref().map(|s| format!("+{}", s)).unwrap_or_default();
-                    let ctx = t.description.context.as_ref().map(|s| format!("@{}", s)).unwrap_or_default();
-                    let tags = format!("          {} {}", proj, ctx);
-                    lines.push(Line::from(Span::raw(tags)));
-                }
-                if let Some(d) = t.description.due {
-                    let due = format!("          due:{}", d.format("%Y-%m-%d"));
-                    lines.push(Line::from(Span::raw(due)));
-                }
-                Some(ListItem::new(Text::from(lines)))
-            } else { None }
-        }).collect();
-        let due_list = List::new(due_items).block(Block::bordered().title("Due Todos"));
-        f.render_widget(due_list, cols[0]);
+                due.push(item);
+            } else {
+                nodue.push(item);
+            }
+        }
 
-        let nodue_items: Vec<ListItem> = self.view.iter().filter_map(|&i| {
-            let t = &self.todos[i];
-            if t.description.due.is_none() {
-                let mut lines = Vec::new();
-                let first = format!("{}: {}{} {}", i+1,
-                    if t.completion { "x " } else { "" },
-                    t.priority.map(|p| format!("({}) ", p)).unwrap_or_default(),
-                    t.description.content);
-                lines.push(Line::from(Span::raw(first)));
-                if t.completion_date.is_some() || t.creation_date.is_some() {
-                    let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string());
-                    let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string());
-                    let dates = format!("            {} {}", cd.unwrap_or_default(), cr.unwrap_or_default());
-                    lines.push(Line::from(Span::raw(dates)));
-                }
-                if t.description.project.is_some() || t.description.context.is_some() {
-                    let proj = t.description.project.as_ref().map(|s| format!("+{}", s)).unwrap_or_default();
-                    let ctx = t.description.context.as_ref().map(|s| format!("@{}", s)).unwrap_or_default();
-                    let tags = format!("            {} {}", proj, ctx);
-                    lines.push(Line::from(Span::raw(tags)));
-                }
-                Some(ListItem::new(Text::from(lines)))
-            } else { None }
-        }).collect();
-        let nodue_list = List::new(nodue_items).block(Block::bordered().title("No-Due Todos"));
-        f.render_widget(nodue_list, cols[1]);
+        f.render_widget(List::new(due).block(Block::bordered().title("Due Todos")), cols[0]);
+        f.render_widget(List::new(nodue).block(Block::bordered().title("No-Due Todos")), cols[1]);
     }
 }

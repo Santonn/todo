@@ -2,7 +2,7 @@ use crate::todo::Todo;
 use std::fs::{read_to_string, OpenOptions};
 use std::io::{self, Write};
 
-/// Load *all* todos from `todo.txt`, one per line.
+/// `todo.txt` から全件ロード
 pub fn load_all() -> Vec<Todo> {
     match read_to_string("todo.txt") {
         Ok(txt) => txt.lines().map(Todo::parse).collect(),
@@ -10,7 +10,7 @@ pub fn load_all() -> Vec<Todo> {
     }
 }
 
-/// Overwrite `todo.txt` with the given list of todos.
+/// `todo.txt` を上書き
 pub fn rewrite_file(todos: &[Todo]) -> io::Result<()> {
     let mut f = OpenOptions::new()
         .write(true)
@@ -23,7 +23,7 @@ pub fn rewrite_file(todos: &[Todo]) -> io::Result<()> {
     Ok(())
 }
 
-/// Append one todo to `todo.txt`.
+/// `todo.txt` に追記
 pub fn append_one(todo: &Todo) -> io::Result<()> {
     let mut f = OpenOptions::new()
         .append(true)

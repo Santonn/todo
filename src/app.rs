@@ -13,9 +13,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-enum InputMode { Normal, Editing }
+#[derive(Clone, Copy)]
+enum InputMode { Normal, Editing, Focused }
 
-/// Which UI block is currently selected
+#[derive(Clone, Copy)]
 enum Focus { Input, Due, NoDue }
 
 pub struct App {
@@ -27,6 +28,8 @@ pub struct App {
     error: Option<String>,
 
     focus: Focus,
+    due_scroll: usize,
+    nodue_scroll: usize,
 }
 
 impl App {
@@ -41,6 +44,8 @@ impl App {
             mode: InputMode::Normal,
             error: None,
             focus: Focus::Input,
+            due_scroll: 0,
+            nodue_scroll: 0,
         }
     }
 
@@ -60,24 +65,23 @@ impl App {
         loop {
             term.draw(|f| self.draw(f))?;
             if let Event::Key(key) = event::read()? {
-                match self.mode {
-                    InputMode::Normal => match key.code {
+                let current_mode = self.mode;
+                match (current_mode, key.kind) {
+                    (InputMode::Normal, KeyEventKind::Press) => match key.code {
                         KeyCode::Char('e') => {
-                            // Enter focus mode for a block
                             self.mode = match self.focus {
                                 Focus::Input => InputMode::Editing,
-                                _ => InputMode::Normal, // others are placeholders
+                                _ => InputMode::Focused,
                             };
                         },
                         KeyCode::Char('q') => break,
-                        // Move focus between blocks
                         KeyCode::Up => match self.focus {
-                            Focus::Due => self.focus = Focus::Input,
-                            Focus::NoDue => self.focus = Focus::Input,
+                            Focus::Due | Focus::NoDue => self.focus = Focus::Input,
                             _ => {}
                         },
                         KeyCode::Down => match self.focus {
                             Focus::Input => self.focus = Focus::Due,
+                            Focus::Due => self.focus = Focus::NoDue,
                             _ => {}
                         },
                         KeyCode::Left => if let Focus::NoDue = self.focus {
@@ -88,7 +92,7 @@ impl App {
                         },
                         _ => {}
                     },
-                    InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
+                    (InputMode::Editing, KeyEventKind::Press) => match key.code {
                         KeyCode::Enter => self.apply_command(),
                         KeyCode::Char(c) => {
                             let idx = self.input.char_indices().map(|(i, _)| i)
@@ -109,6 +113,20 @@ impl App {
                         KeyCode::Esc => self.mode = InputMode::Normal,
                         _ => {}
                     },
+                    (InputMode::Focused, KeyEventKind::Press) => match key.code {
+                        KeyCode::Up => match self.focus {
+                            Focus::Due => self.due_scroll = self.due_scroll.saturating_sub(1),
+                            Focus::NoDue => self.nodue_scroll = self.nodue_scroll.saturating_sub(1),
+                            _ => {}
+                        },
+                        KeyCode::Down => match self.focus {
+                            Focus::Due => self.due_scroll += 1,
+                            Focus::NoDue => self.nodue_scroll += 1,
+                            _ => {}
+                        },
+                        KeyCode::Esc => self.mode = InputMode::Normal,
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -124,27 +142,20 @@ impl App {
             Constraint::Min(1),
         ]).split(f.area());
 
-        // Header
         let header = if let Some(err) = &self.error {
             Paragraph::new(err.clone()).style(Style::default().fg(Color::Red))
         } else {
             let (msg, style) = match self.mode {
                 InputMode::Normal => (
-                    vec![
-                        "Press ".into(),
-                        "e".bold(),
-                        " to focus block, arrows to move focus, q to quit.".into()
-                    ],
+                    vec!["Press ".into(), "e".bold(), " to focus block, arrows to move focus, q to quit.".into()],
                     Style::default().add_modifier(Modifier::RAPID_BLINK),
                 ),
                 InputMode::Editing => (
-                    vec![
-                        "Press ".into(),
-                        "Esc".bold(),
-                        " to cancel, ".into(),
-                        "Enter".bold(),
-                        " to run.".into()
-                    ],
+                    vec!["Press ".into(), "Esc".bold(), " to cancel, ".into(), "Enter".bold(), " to run.".into()],
+                    Style::default(),
+                ),
+                InputMode::Focused => (
+                    vec!["Use arrows to scroll list, ".into(), "Esc".bold(), " to return.".into()],
                     Style::default(),
                 ),
             };
@@ -152,7 +163,6 @@ impl App {
         };
         f.render_widget(header, chunks[0]);
 
-        // Input box
         let input_block = if let Focus::Input = self.focus {
             Block::bordered().title("Input").border_style(Style::default().fg(Color::Yellow))
         } else {
@@ -168,7 +178,6 @@ impl App {
             f.set_cursor_position((chunks[1].x + self.cursor_x() + 1, chunks[1].y + 1));
         }
 
-        // Todo lists
         let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
         let sep = |w: u16| Line::from(vec![Span::raw(" "), Span::raw("-".repeat((w - 2) as usize))]);
 
@@ -211,20 +220,22 @@ impl App {
             }
         }
 
-        // Due Todos pane with focus highlighting
         let due_block = if let Focus::Due = self.focus {
             Block::bordered().title("Due Todos").border_style(Style::default().fg(Color::Yellow))
         } else {
             Block::bordered().title("Due Todos")
         };
-        f.render_widget(List::new(due_items).block(due_block), cols[0]);
+        let due_end = (self.due_scroll + 10).min(due_items.len());
+        let visible_due = due_items.get(self.due_scroll..due_end).unwrap_or(&[]);
+        f.render_widget(List::new(visible_due.to_vec()).block(due_block), cols[0]);
 
-        // No-Due Todos pane with focus highlighting
         let nodue_block = if let Focus::NoDue = self.focus {
             Block::bordered().title("No‑Due Todos").border_style(Style::default().fg(Color::Yellow))
         } else {
             Block::bordered().title("No‑Due Todos")
         };
-        f.render_widget(List::new(nodue_items).block(nodue_block), cols[1]);
+        let nodue_end = (self.nodue_scroll + 10).min(nodue_items.len());
+        let visible_nodue = nodue_items.get(self.nodue_scroll..nodue_end).unwrap_or(&[]);
+        f.render_widget(List::new(visible_nodue.to_vec()).block(nodue_block), cols[1]);
     }
 }

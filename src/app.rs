@@ -15,6 +15,9 @@ use unicode_width::UnicodeWidthStr;
 
 enum InputMode { Normal, Editing }
 
+/// Which UI block is currently selected
+enum Focus { Input, Due, NoDue }
+
 pub struct App {
     todos: Vec<Todo>,
     view: Vec<usize>,
@@ -22,13 +25,23 @@ pub struct App {
     cursor: usize,
     mode: InputMode,
     error: Option<String>,
+
+    focus: Focus,
 }
 
 impl App {
     pub fn new() -> Self {
         let todos = load_all();
         let view = (0..todos.len()).collect();
-        Self { todos, view, input: String::new(), cursor: 0, mode: InputMode::Normal, error: None }
+        Self {
+            todos,
+            view,
+            input: String::new(),
+            cursor: 0,
+            mode: InputMode::Normal,
+            error: None,
+            focus: Focus::Input,
+        }
     }
 
     fn apply_command(&mut self) {
@@ -49,8 +62,30 @@ impl App {
             if let Event::Key(key) = event::read()? {
                 match self.mode {
                     InputMode::Normal => match key.code {
-                        KeyCode::Char('e') => self.mode = InputMode::Editing,
+                        KeyCode::Char('e') => {
+                            // Enter focus mode for a block
+                            self.mode = match self.focus {
+                                Focus::Input => InputMode::Editing,
+                                _ => InputMode::Normal, // others are placeholders
+                            };
+                        },
                         KeyCode::Char('q') => break,
+                        // Move focus between blocks
+                        KeyCode::Up => match self.focus {
+                            Focus::Due => self.focus = Focus::Input,
+                            Focus::NoDue => self.focus = Focus::Input,
+                            _ => {}
+                        },
+                        KeyCode::Down => match self.focus {
+                            Focus::Input => self.focus = Focus::Due,
+                            _ => {}
+                        },
+                        KeyCode::Left => if let Focus::NoDue = self.focus {
+                            self.focus = Focus::Due;
+                        },
+                        KeyCode::Right => if let Focus::Due = self.focus {
+                            self.focus = Focus::NoDue;
+                        },
                         _ => {}
                     },
                     InputMode::Editing if key.kind == KeyEventKind::Press => match key.code {
@@ -89,17 +124,27 @@ impl App {
             Constraint::Min(1),
         ]).split(f.area());
 
-        // ヘッダー
+        // Header
         let header = if let Some(err) = &self.error {
             Paragraph::new(err.clone()).style(Style::default().fg(Color::Red))
         } else {
             let (msg, style) = match self.mode {
                 InputMode::Normal => (
-                    vec!["Press ".into(), "q".bold(), " to quit, ".into(), "e".bold(), " to edit.".into()],
+                    vec![
+                        "Press ".into(),
+                        "e".bold(),
+                        " to focus block, arrows to move focus, q to quit.".into()
+                    ],
                     Style::default().add_modifier(Modifier::RAPID_BLINK),
                 ),
                 InputMode::Editing => (
-                    vec!["Press ".into(), "Esc".bold(), " to cancel, ".into(), "Enter".bold(), " to run.".into()],
+                    vec![
+                        "Press ".into(),
+                        "Esc".bold(),
+                        " to cancel, ".into(),
+                        "Enter".bold(),
+                        " to run.".into()
+                    ],
                     Style::default(),
                 ),
             };
@@ -107,16 +152,23 @@ impl App {
         };
         f.render_widget(header, chunks[0]);
 
-        // 入力欄
+        // Input box
+        let input_block = if let Focus::Input = self.focus {
+            Block::bordered().title("Input").border_style(Style::default().fg(Color::Yellow))
+        } else {
+            Block::bordered().title("Input")
+        };
         let input = Paragraph::new(self.input.as_str())
-            .style(if matches!(self.mode, InputMode::Editing) { Style::default().fg(Color::Yellow) } else { Style::default() })
-            .block(Block::bordered().title("Input"));
+            .style(if matches!(self.mode, InputMode::Editing) {
+                Style::default().fg(Color::Yellow)
+            } else { Style::default() })
+            .block(input_block);
         f.render_widget(input, chunks[1]);
         if matches!(self.mode, InputMode::Editing) {
             f.set_cursor_position((chunks[1].x + self.cursor_x() + 1, chunks[1].y + 1));
         }
 
-        // TODO リスト表示
+        // Todo lists
         let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(chunks[2]);
         let sep = |w: u16| Line::from(vec![Span::raw(" "), Span::raw("-".repeat((w - 2) as usize))]);
 
@@ -125,30 +177,30 @@ impl App {
 
         for (idx, &i) in self.view.iter().enumerate() {
             let t = &self.todos[i];
-            // マーカー色
             let marker_color = t.marker_color(today);
             let marker = Span::styled(" ", Style::default().bg(marker_color));
-
             let mut lines = Vec::new();
             lines.push(sep(cols[0].width));
-            // 見出し行
             let head = format!("{}: {}{}{}",
                 idx + 1,
                 if t.completion { "x " } else { "" },
                 t.priority.map(|p| format!("({}) ", p)).unwrap_or_default(),
-                t.description.content
-            );
+                t.description.content);
             lines.push(Line::from(vec![marker.clone(), Span::raw(head)]));
-            // 日付行
             if t.completion_date.is_some() || t.creation_date.is_some() {
                 let cd = t.completion_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
                 let cr = t.creation_date.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
                 lines.push(Line::from(vec![marker.clone(), Span::raw(format!("     {} {}", cd, cr))]));
             }
-            // タグ行 & due
-            if let Some(p) = &t.description.project { lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      +{}", p))])); }
-            if let Some(c) = &t.description.context { lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      @{}", c))])); }
-            if let Some(d) = t.description.due { lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      due:{}", d.format("%Y-%m-%d"))) ])); }
+            if let Some(p) = &t.description.project {
+                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      +{}", p))]));
+            }
+            if let Some(c) = &t.description.context {
+                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      @{}", c))]));
+            }
+            if let Some(d) = t.description.due {
+                lines.push(Line::from(vec![marker.clone(), Span::raw(format!("      due:{}", d.format("%Y-%m-%d"))) ]));
+            }
             lines.push(sep(cols[0].width));
 
             let item = ListItem::new(Text::from(lines));
@@ -159,7 +211,20 @@ impl App {
             }
         }
 
-        f.render_widget(List::new(due_items).block(Block::bordered().title("Due Todos")), cols[0]);
-        f.render_widget(List::new(nodue_items).block(Block::bordered().title("No-Due Todos")), cols[1]);
+        // Due Todos pane with focus highlighting
+        let due_block = if let Focus::Due = self.focus {
+            Block::bordered().title("Due Todos").border_style(Style::default().fg(Color::Yellow))
+        } else {
+            Block::bordered().title("Due Todos")
+        };
+        f.render_widget(List::new(due_items).block(due_block), cols[0]);
+
+        // No-Due Todos pane with focus highlighting
+        let nodue_block = if let Focus::NoDue = self.focus {
+            Block::bordered().title("No‑Due Todos").border_style(Style::default().fg(Color::Yellow))
+        } else {
+            Block::bordered().title("No‑Due Todos")
+        };
+        f.render_widget(List::new(nodue_items).block(nodue_block), cols[1]);
     }
 }
